@@ -1,0 +1,41 @@
+appId: com.roesch.tts
+productName: Roesch TTS
+copyright: Copyright © 2026 Roesch TTS
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+asar: true
+npmRebuild: false
+extraResources:
+  - from: runtime
+    to: runtime
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+portable:
+  artifactName: RoeschTTS-${version}-portable.exe
+  requestExecutionLevel: user
+  unpackDirName: RoeschTTS
+nsis:
+  artifactName: RoeschTTS-Setup-${version}.${ext}
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Roesch TTS
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico

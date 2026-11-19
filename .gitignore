@@ -1,0 +1,12 @@
+node_modules/
+out/
+release/
+runtime/
+models/
+audios/
+voices/
+logs/
+tmp/
+.dev/
+*.log
+settings.json
