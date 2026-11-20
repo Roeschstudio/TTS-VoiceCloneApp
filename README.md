@@ -10,7 +10,7 @@ Estudio de voz local para Windows. Clona una voz a partir de 15–30 segundos de
 - Texto de hasta **3.000 caracteres** (recomendado: 1.500).
 - Motor **llama.cpp `llama-tts`** con backend **Vulkan** (GPU AMD/NVIDIA/Intel) y **CPU** de respaldo.
 - Barra de progreso con velocidad real, frames generados y **tiempo estimado**.
-- Presets de acabado: **Original**, **Estudio** (−18 LUFS), **Podcast** (−16 LUFS) y **Radio** (−14 LUFS).
+- Presets de acabado: **Original**, **Estudio** (−17 LUFS), **Podcast** (−16 LUFS) y **Radio** (−14 LUFS).
 - Reproductor con forma de onda, historial, descarga **WAV** y **MP3**.
 - Guardado automático en `audios/` junto a la aplicación (o en `%APPDATA%` si la carpeta no es escribible).
 - Primera ejecución: detecta hardware, descarga el modelo (~1,4 GB) con `curl` y prueba el motor automáticamente.

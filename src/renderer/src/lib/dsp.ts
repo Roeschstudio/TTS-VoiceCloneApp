@@ -42,8 +42,8 @@ export const PRESET_CONFIG: Record<Exclude<PresetId, 'original'>, PresetConfig> 
     ],
     compressor: { threshold: -20, ratio: 2.6, attack: 12, release: 140, knee: 8 },
     deEsser: { amount: 0.45, frequency: 5600, threshold: -23 },
-    targetLufs: -18,
-    ceilingDb: -1.5
+    targetLufs: -17,
+    ceilingDb: -2.3
   },
   podcast: {
     highpass: 90,
@@ -56,7 +56,7 @@ export const PRESET_CONFIG: Record<Exclude<PresetId, 'original'>, PresetConfig> 
     compressor: { threshold: -18, ratio: 3.4, attack: 8, release: 110, knee: 7 },
     deEsser: { amount: 0.55, frequency: 5500, threshold: -22 },
     targetLufs: -16,
-    ceilingDb: -1.2
+    ceilingDb: -1.5
   },
   radio: {
     highpass: 100,
@@ -69,7 +69,7 @@ export const PRESET_CONFIG: Record<Exclude<PresetId, 'original'>, PresetConfig> 
     compressor: { threshold: -22, ratio: 4.0, attack: 5, release: 80, knee: 6 },
     deEsser: { amount: 0.62, frequency: 5200, threshold: -21 },
     targetLufs: -14,
-    ceilingDb: -0.8
+    ceilingDb: -1
   }
 }
 
@@ -259,14 +259,66 @@ export function measureLufs(samples: Float32Array, sampleRate: number): number {
   return -0.691 + 10 * Math.log10(mean + 1e-12)
 }
 
-function peakLimit(samples: Float32Array, ceilingDb: number): Float32Array {
-  let peak = 0
-  for (let i = 0; i < samples.length; i++) peak = Math.max(peak, Math.abs(samples[i]))
-  const ceiling = dbToGain(ceilingDb)
-  if (peak <= ceiling || peak === 0) return samples
-  const gain = ceiling / peak
+function applyGain(samples: Float32Array, gain: number): Float32Array {
   const out = new Float32Array(samples.length)
-  for (let i = 0; i < samples.length; i++) out[i] = Math.max(-ceiling, Math.min(ceiling, samples[i] * gain))
+  for (let i = 0; i < samples.length; i++) out[i] = samples[i] * gain
+  return out
+}
+
+// Look-ahead limiter. Unlike a plain gain scale, it only attenuates the
+// neighbourhood of a peak, so loudness survives normalization.
+function lookaheadLimiter(samples: Float32Array, sampleRate: number, ceilingDb: number): Float32Array {
+  const n = samples.length
+  if (n === 0) return samples
+  const ceiling = dbToGain(ceilingDb)
+  const lookahead = Math.max(1, Math.round(sampleRate * 0.005))
+  const release = Math.exp(-1 / (sampleRate * 0.09))
+
+  // Required gain per sample, padded with 1 so the tail needs no reduction.
+  const padded = new Float32Array(n + lookahead).fill(1)
+  for (let i = 0; i < n; i++) {
+    const level = Math.abs(samples[i])
+    padded[i] = level > ceiling ? ceiling / level : 1
+  }
+
+  // Sliding minimum over [i, i + lookahead] via a monotonic deque.
+  const minEnd = new Float32Array(padded.length)
+  const deque: number[] = []
+  for (let k = 0; k < padded.length; k++) {
+    while (deque.length > 0 && padded[deque[deque.length - 1]] >= padded[k]) deque.pop()
+    deque.push(k)
+    while (deque[0] < k - lookahead) deque.shift()
+    minEnd[k] = padded[deque[0]]
+  }
+
+  const out = new Float32Array(n)
+  let gain = 1
+  for (let i = 0; i < n; i++) {
+    const target = minEnd[i + lookahead]
+    gain = target < gain ? target : release * gain + (1 - release) * target
+    out[i] = samples[i] * gain
+  }
+  return out
+}
+
+// Reaches the LUFS target while keeping peaks under the ceiling. Each pass
+// raises the level and the limiter shaves only the peaks, so loudness survives.
+function matchLoudness(
+  samples: Float32Array,
+  sampleRate: number,
+  targetLufs: number,
+  ceilingDb: number,
+  passes = 5
+): Float32Array {
+  let out = samples
+  for (let pass = 0; pass < passes; pass++) {
+    const lufs = measureLufs(out, sampleRate)
+    if (!Number.isFinite(lufs) || lufs <= -70) break
+    const deltaDb = targetLufs - lufs
+    if (Math.abs(deltaDb) < 0.1) break
+    out = applyGain(out, dbToGain(deltaDb))
+    out = lookaheadLimiter(out, sampleRate, ceilingDb)
+  }
   return out
 }
 
@@ -288,17 +340,9 @@ export function processPreset(input: Float32Array, sampleRate: number, preset: P
   samples = deEss(samples, sampleRate, config.deEsser)
   samples = compress(samples, sampleRate, config.compressor)
 
-  const lufs = measureLufs(samples, sampleRate)
-  if (Number.isFinite(lufs) && lufs > -70) {
-    const gain = dbToGain(config.targetLufs - lufs)
-    if (Math.abs(gain - 1) > 0.01) {
-      const gained = new Float32Array(samples.length)
-      for (let i = 0; i < samples.length; i++) gained[i] = samples[i] * gain
-      samples = gained
-    }
-  }
-
-  samples = peakLimit(samples, config.ceilingDb)
+  // Gain staging: iterate level + peak limiting so the LUFS target is met
+  // and the ceiling is respected.
+  samples = matchLoudness(samples, sampleRate, config.targetLufs, config.ceilingDb)
 
   const fade = Math.min(Math.floor(sampleRate * 0.008), Math.floor(samples.length / 2))
   for (let i = 0; i < fade; i++) {
@@ -326,8 +370,8 @@ export const PRESET_META: Record<
   studio: {
     name: 'Estudio',
     short: 'Limpio',
-    description: 'Limpieza suave, control de graves, presencia y compresión ligera. −18 LUFS.',
-    target: '−18 LUFS'
+    description: 'Limpieza suave, control de graves, presencia y compresión ligera. −17 LUFS.',
+    target: '−17 LUFS'
   },
   podcast: {
     name: 'Podcast',
