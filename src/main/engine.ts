@@ -11,6 +11,7 @@ import {
   GenerationPlan,
   GenerationProgress,
   GenerationStage,
+  HardwareInfo,
   HistoryEntry,
   LanguageCode
 } from '@shared/types'
@@ -116,7 +117,8 @@ function buildArgs(
   backend: Backend,
   request: GenerateRequest,
   outputPath: string,
-  totalFrames: number
+  totalFrames: number,
+  hardware: HardwareInfo
 ): string[] {
   const { modelsDir } = getPaths()
   const talker = path.join(modelsDir, MODEL_FILES[0].name)
@@ -147,7 +149,9 @@ function buildArgs(
   if (backend === 'vulkan') {
     args.push('-ngl', '99', '--device', 'Vulkan0')
   } else {
-    args.push('-ngl', '0', '-t', '12')
+    // llama.cpp recommends one thread per physical core for CPU inference.
+    const threads = Math.max(1, Math.min(32, hardware.cpuCores || hardware.cpuThreads || 4))
+    args.push('-ngl', '0', '-t', String(threads))
   }
 
   return args
@@ -193,7 +197,7 @@ async function runJob(
   }
   active = job
 
-  const args = buildArgs(backend, request, outputPath, maxFrames)
+  const args = buildArgs(backend, request, outputPath, maxFrames, hardware)
   const env = { ...process.env }
   if (backend === 'vulkan') {
     const index = hardware.selectedVulkanIndex
@@ -502,6 +506,9 @@ export async function testEngine(): Promise<EngineTestResult> {
 
   const reference = getPaths().referenceWav
   const voice = fs.existsSync(reference) ? reference : null
+  const gpuName =
+    hardware.vulkanDevices.find((device) => device.index === hardware.selectedVulkanIndex)?.name ??
+    hardware.primaryGpuName
   const request: GenerateRequest = {
     text: 'Hola. Esta es una prueba de funcionamiento de Roesch TTS.',
     language: 'es',
@@ -534,7 +541,7 @@ export async function testEngine(): Promise<EngineTestResult> {
         loadSec: Math.round(result.loadSec * 10) / 10,
         message:
           backend === 'vulkan'
-            ? 'Motor Vulkan listo en la Radeon RX 6500M.'
+            ? `Motor Vulkan listo en ${gpuName ?? 'la GPU'}.`
             : preferred === 'vulkan'
               ? 'Vulkan no respondió correctamente. Se activó el modo CPU.'
               : 'Motor CPU listo.',

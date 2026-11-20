@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { Backend, HardwareInfo, VulkanDevice } from '@shared/types'
+import { Backend, GpuInfo, GpuVendor, HardwareInfo, VulkanDevice } from '@shared/types'
 import { getPaths } from './paths'
 import { getSettings } from './settings'
 
@@ -38,6 +38,12 @@ interface CimGpu {
   AdapterRAM?: number
 }
 
+interface NvidiaGpu {
+  name: string
+  vramMB: number
+  driverVersion: string
+}
+
 async function readCpu(): Promise<CimCpu> {
   try {
     const out = await powershell(
@@ -62,6 +68,54 @@ async function readGpus(): Promise<CimGpu[]> {
   } catch {
     return []
   }
+}
+
+// Win32_VideoController.AdapterRAM is a 32-bit field: any GPU above 4 GB reports
+// a wrapped value. nvidia-smi gives the real total, so prefer it for NVIDIA.
+async function readNvidiaGpus(): Promise<NvidiaGpu[]> {
+  const candidates = [
+    'nvidia-smi',
+    path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'nvidia-smi.exe'),
+    path.join(
+      process.env.ProgramFiles || 'C:\\Program Files',
+      'NVIDIA Corporation',
+      'NVSMI',
+      'nvidia-smi.exe'
+    )
+  ]
+
+  for (const exe of candidates) {
+    try {
+      const { stdout } = await execFileAsync(
+        exe,
+        ['--query-gpu=name,memory.total,driver_version', '--format=csv,noheader,nounits'],
+        { timeout: 8000, windowsHide: true, maxBuffer: 1024 * 1024 }
+      )
+      const gpus = stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [name, memory, driver] = line.split(',').map((part) => part.trim())
+          return {
+            name: name || 'NVIDIA GPU',
+            vramMB: Number(memory) || 0,
+            driverVersion: driver || ''
+          }
+        })
+      if (gpus.length > 0) return gpus
+    } catch {
+      // try the next location
+    }
+  }
+  return []
+}
+
+function vendorOf(name: string): GpuVendor {
+  if (/NVIDIA|GeForce|RTX|Quadro|Tesla/i.test(name)) return 'nvidia'
+  if (/AMD|Radeon|ATI|FirePro/i.test(name)) return 'amd'
+  if (/Intel/i.test(name)) return 'intel'
+  return 'other'
 }
 
 function cleanDeviceName(raw: string): string {
@@ -96,15 +150,28 @@ async function readVulkanDevices(): Promise<VulkanDevice[]> {
   }
 }
 
-const INTEGRATED_RE = /Radeon\(TM\) Graphics|Radeon Graphics|Intel\(R\) (UHD|Iris|HD)|Microsoft Basic|Microsoft Hyper-V|llvmpipe/i
+// Integrated GPUs share system RAM, so their "free VRAM" can look larger than a
+// discrete card's. Match known discrete families instead of blacklisting iGPUs.
+const INTEGRATED_RE =
+  /Radeon\(TM\) Graphics|Radeon Graphics|Radeon \d{3}M|Radeon Vega|Vega \d+|Intel\(R\) (UHD|Iris|HD|Graphics)|Microsoft Basic|Microsoft Hyper-V|llvmpipe/i
+
+const DISCRETE_RE =
+  /NVIDIA|GeForce|RTX|Quadro|Tesla|Radeon RX|Radeon Pro|FirePro|Intel\(R\) Arc\(TM\) [AB]\d/i
+
+function isDiscreteGpu(name: string): boolean {
+  if (INTEGRATED_RE.test(name)) return false
+  return DISCRETE_RE.test(name)
+}
 
 function selectVulkanDevice(devices: VulkanDevice[]): number | null {
   if (devices.length === 0) return null
-  const discrete = devices.filter((d) => !INTEGRATED_RE.test(d.name))
+  const discrete = devices.filter((device) => isDiscreteGpu(device.name))
   if (discrete.length > 0) {
     discrete.sort((a, b) => b.freeMB - a.freeMB || b.vramMB - a.vramMB)
     return discrete[0].index
   }
+  const unknown = devices.filter((device) => !INTEGRATED_RE.test(device.name))
+  if (unknown.length === 1) return unknown[0].index
   if (devices.length === 1) return devices[0].index
   return null
 }
@@ -112,7 +179,12 @@ function selectVulkanDevice(devices: VulkanDevice[]): number | null {
 export async function detectHardware(force = false): Promise<HardwareInfo> {
   if (cached && !force) return cached
 
-  const [cpu, gpus, vulkanDevices] = await Promise.all([readCpu(), readGpus(), readVulkanDevices()])
+  const [cpu, gpus, nvidiaGpus, vulkanDevices] = await Promise.all([
+    readCpu(),
+    readGpus(),
+    readNvidiaGpus(),
+    readVulkanDevices()
+  ])
 
   let diskFreeGB = 0
   try {
@@ -123,14 +195,31 @@ export async function detectHardware(force = false): Promise<HardwareInfo> {
     diskFreeGB = 0
   }
 
-  const mappedGpus = gpus
-    .filter((g) => Boolean(g.Name))
-    .map((g) => ({
-      name: g.Name as string,
-      vramMB: Math.round((g.AdapterRAM || 0) / 1024 / 1024)
-    }))
+  const mappedGpus: GpuInfo[] = [
+    ...nvidiaGpus.map((gpu) => ({
+      name: gpu.name,
+      vramMB: gpu.vramMB,
+      vendor: 'nvidia' as const,
+      driverVersion: gpu.driverVersion || undefined
+    })),
+    ...gpus
+      .filter((gpu) => Boolean(gpu.Name))
+      .filter((gpu) => !(nvidiaGpus.length > 0 && /NVIDIA/i.test(gpu.Name as string)))
+      .map((gpu) => ({
+        name: gpu.Name as string,
+        vramMB: Math.round((gpu.AdapterRAM || 0) / 1024 / 1024),
+        vendor: vendorOf(gpu.Name as string)
+      }))
+  ]
 
   const hasVulkanLoader = fs.existsSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'vulkan-1.dll'))
+  const selectedVulkanIndex = selectVulkanDevice(vulkanDevices)
+  const selectedVulkan = vulkanDevices.find((device) => device.index === selectedVulkanIndex)
+  const primaryGpuName =
+    selectedVulkan?.name ??
+    mappedGpus.find((gpu) => isDiscreteGpu(gpu.name))?.name ??
+    mappedGpus[0]?.name ??
+    null
 
   cached = {
     os: `${os.type()} ${os.release()} (${process.arch})`,
@@ -139,9 +228,10 @@ export async function detectHardware(force = false): Promise<HardwareInfo> {
     cpuThreads: cpu.NumberOfLogicalProcessors || os.cpus().length,
     ramGB: Math.round((os.totalmem() / 1024 ** 3) * 10) / 10,
     gpus: mappedGpus,
+    primaryGpuName,
     hasVulkan: hasVulkanLoader && vulkanDevices.length > 0,
     vulkanDevices,
-    selectedVulkanIndex: selectVulkanDevice(vulkanDevices),
+    selectedVulkanIndex,
     diskFreeGB
   }
 

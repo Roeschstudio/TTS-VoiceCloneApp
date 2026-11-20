@@ -304,7 +304,7 @@ export default function App(): React.JSX.Element {
   const handleUpdateSettings = async (patch: Partial<AppSettings>): Promise<void> => {
     try {
       const next = await window.roesch.updateSettings(patch)
-      setState((current) => (current ? { ...current, settings: next, backend: next.backend === 'cpu' ? 'cpu' : current.backend } : current))
+      setState((current) => (current ? { ...current, settings: next } : current))
       await refreshState()
     } catch (error) {
       pushToast(friendlyError(error), 'error')

@@ -33,9 +33,13 @@ export const LANGUAGES: LanguageOption[] = [
   { code: 'zh', label: 'Chino', native: '中文' }
 ]
 
+export type GpuVendor = 'nvidia' | 'amd' | 'intel' | 'other'
+
 export interface GpuInfo {
   name: string
   vramMB: number
+  vendor: GpuVendor
+  driverVersion?: string
 }
 
 export interface VulkanDevice {
@@ -52,6 +56,7 @@ export interface HardwareInfo {
   cpuThreads: number
   ramGB: number
   gpus: GpuInfo[]
+  primaryGpuName: string | null
   hasVulkan: boolean
   vulkanDevices: VulkanDevice[]
   selectedVulkanIndex: number | null

@@ -104,7 +104,7 @@ export function SetupScreen({
             <Monitor size={18} />
             <div>
               <span>Gráfica</span>
-              <strong>{selectedVulkan?.name ?? hw.gpus.find((gpu) => !/Radeon\(TM\) Graphics/i.test(gpu.name))?.name ?? 'CPU'}</strong>
+              <strong>{selectedVulkan?.name ?? hw.primaryGpuName ?? 'CPU'}</strong>
               <em>{selectedVulkan ? `${(selectedVulkan.freeMB / 1024).toFixed(1)} GB VRAM libres` : 'Se usará el procesador'}</em>
             </div>
           </div>
@@ -113,7 +113,7 @@ export function SetupScreen({
             <div>
               <span>Aceleración</span>
               <strong>{state.backend === 'vulkan' ? 'Vulkan' : 'CPU'}</strong>
-              <em>{hw.hasVulkan ? 'GPU AMD detectada' : 'Sin Vulkan disponible'}</em>
+              <em>{hw.hasVulkan ? 'GPU compatible con Vulkan' : 'Sin Vulkan disponible'}</em>
             </div>
           </div>
         </section>
